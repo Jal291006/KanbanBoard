@@ -1,11 +1,14 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react' // or '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite' // <-- We accidentally deleted this!
 
-// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
-    react(),
-    tailwindcss(), // 👈 Add this line here
+    react(), 
+    tailwindcss() // <-- And this!
   ],
+  resolve: {
+    // This keeps the Supabase login working perfectly
+    dedupe: ['react', 'react-dom'],
+  },
 })

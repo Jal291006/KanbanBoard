@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   closestCorners,
   DndContext,
@@ -19,6 +19,22 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { X } from 'lucide-react'
 
+// --- NEW SUPABASE IMPORTS ---
+import { Auth } from '@supabase/auth-ui-react'
+import { ThemeSupa } from '@supabase/auth-ui-shared'
+import type { Session } from '@supabase/supabase-js'
+import { supabase } from './supabase'
+import {
+  fetchBoardData,
+  dbAddColumn,
+  dbAddCard,
+  dbDeleteColumn,
+  dbDeleteCard,
+  dbRenameColumn,
+  dbUpdateCardPosition,
+} from './dbService'
+// ----------------------------
+
 type Card = {
   id: string
   title: string
@@ -38,27 +54,6 @@ const BOARD_THEMES = [
   { id: 'purple', label: 'Purple', value: 'bg-indigo-950' },
   { id: 'sunset', label: 'Sunset', value: 'bg-gradient-to-br from-orange-500 to-rose-600' },
   { id: 'ocean', label: 'Ocean', value: 'bg-gradient-to-br from-cyan-700 to-blue-900' },
-]
-
-const initialColumns: Column[] = [
-  {
-    id: 'todo',
-    title: 'To Do',
-    cards: [
-      { id: '1', title: 'Create project' },
-      { id: '2', title: 'Build board UI' },
-    ],
-  },
-  {
-    id: 'doing',
-    title: 'Doing',
-    cards: [{ id: '3', title: 'Style with Tailwind' }],
-  },
-  {
-    id: 'done',
-    title: 'Done',
-    cards: [{ id: '4', title: 'Install dependencies' }],
-  },
 ]
 
 type TrelloCardProps = {
@@ -242,11 +237,16 @@ function TrelloColumn({
 }
 
 function App() {
-  const [columns, setColumns] = useState(initialColumns)
+  // --- SUPABASE STATE ---
+  const [session, setSession] = useState<Session | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [boardLoading, setBoardLoading] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
+  const [columns, setColumns] = useState<Column[]>([]) // Starts empty, loads from DB
+  
   const [newCardTitles, setNewCardTitles] = useState<Record<string, string>>({})
   const [newColumnTitle, setNewColumnTitle] = useState('')
   const [activeCard, setActiveCard] = useState<Card | null>(null)
-  
   const [theme, setTheme] = useState(BOARD_THEMES[0].value)
 
   const sensors = useSensors(
@@ -257,27 +257,150 @@ function App() {
     })
   )
 
-  function addCard(columnId: string) {
+  // --- SUPABASE DATA FETCHING ---
+  useEffect(() => {
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        setSession(data.session)
+      })
+      .catch(console.error)
+      .finally(() => {
+        setLoading(false)
+      })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    if (session) {
+      setBoardLoading(true)
+      setErrorMessage('')
+      fetchBoardData()
+        .then((data) => setColumns(data))
+        .catch((error) => {
+          console.error(error)
+          setErrorMessage(getErrorMessage(error))
+        })
+        .finally(() => {
+          setBoardLoading(false)
+        })
+    } else {
+      Promise.resolve().then(() => {
+        setColumns([])
+        setBoardLoading(false)
+        setErrorMessage('')
+      })
+    }
+  }, [session])
+
+  async function refreshBoard() {
+    try {
+      setBoardLoading(true)
+      setErrorMessage('')
+      setColumns(await fetchBoardData())
+    } catch (e) {
+      console.error(e)
+      setErrorMessage(getErrorMessage(e))
+    } finally {
+      setBoardLoading(false)
+    }
+  }
+
+  function getErrorMessage(error: unknown) {
+    if (error instanceof Error) return error.message
+
+    if (error && typeof error === 'object' && 'message' in error) {
+      return String(error.message)
+    }
+
+    return 'Something went wrong while talking to Supabase.'
+  }
+
+  function getOrderedCardsForMove(
+    prevColumns: Column[],
+    sourceColumnId: string,
+    targetColumnId: string,
+    activeId: string,
+    overId: string,
+  ) {
+    if (sourceColumnId === targetColumnId) {
+      const column = prevColumns.find((col) => col.id === sourceColumnId)
+      if (!column) return null
+
+      const oldIndex = column.cards.findIndex((card) => card.id === activeId)
+      const newIndex = column.cards.findIndex((card) => card.id === overId)
+
+      if (oldIndex === -1 || newIndex === -1) return null
+
+      return arrayMove(column.cards, oldIndex, newIndex)
+    }
+
+    const sourceColumn = prevColumns.find((col) => col.id === sourceColumnId)
+    const targetColumn = prevColumns.find((col) => col.id === targetColumnId)
+
+    if (!sourceColumn || !targetColumn) return null
+
+    const movingCard = sourceColumn.cards.find((card) => card.id === activeId)
+    if (!movingCard) return null
+
+    const newIndex =
+      targetColumn.cards.findIndex((card) => card.id === overId)
+
+    const updatedCards = [...targetColumn.cards]
+    updatedCards.splice(newIndex === -1 ? targetColumn.cards.length : newIndex, 0, movingCard)
+
+    return updatedCards
+  }
+
+  async function syncColumnCardPositions(columnId: string, cards: Card[]) {
+    try {
+      await Promise.all(
+        cards.map((card, position) =>
+          dbUpdateCardPosition(card.id, columnId, position),
+        ),
+      )
+    } catch (e) {
+      console.error(e)
+      void refreshBoard()
+    }
+  }
+
+  async function addCard(columnId: string) {
     const cardTitle = newCardTitles[columnId] || ''
     if (!cardTitle.trim()) return
 
-    setColumns((prevColumns) =>
-      prevColumns.map((column) =>
-        column.id === columnId
-          ? {
-              ...column,
-              cards: [
-                ...column.cards,
-                { id: crypto.randomUUID(), title: cardTitle },
-              ],
-            }
-          : column,
-      ),
-    )
     setNewCardTitles((prevTitles) => ({ ...prevTitles, [columnId]: '' }))
+
+    // 1. Add to Supabase
+    const targetCol = columns.find(c => c.id === columnId)
+    const position = targetCol ? targetCol.cards.length : 0
+    try {
+      const dbCard = await dbAddCard(cardTitle, columnId, position)
+      
+      // 2. Update your exact state logic with real ID
+      setColumns((prevColumns) =>
+        prevColumns.map((column) =>
+          column.id === columnId
+            ? {
+                ...column,
+                cards: [...column.cards, { id: dbCard.id, title: dbCard.title }],
+              }
+            : column,
+        ),
+      )
+    } catch(e) {
+      console.error(e)
+      setErrorMessage(getErrorMessage(e))
+    }
   }
 
-  function deleteCard(columnId: string, cardId: string) {
+  async function deleteCard(columnId: string, cardId: string) {
+    // 1. Your exact optimistic update
     setColumns((prevColumns) =>
       prevColumns.map((column) =>
         column.id === columnId
@@ -285,29 +408,60 @@ function App() {
           : column,
       ),
     )
+    // 2. Delete from DB
+    await dbDeleteCard(cardId).catch((error) => {
+      console.error(error)
+      setErrorMessage(getErrorMessage(error))
+      void refreshBoard()
+    })
   }
 
-  function addColumn() {
+  async function addColumn() {
     if (!newColumnTitle.trim()) return
-    setColumns((prevColumns) => [
-      ...prevColumns,
-      { id: crypto.randomUUID(), title: newColumnTitle, cards: [] },
-    ])
+    const title = newColumnTitle
     setNewColumnTitle('')
+
+    try {
+      // 1. Add to Supabase
+      const dbCol = await dbAddColumn(title, columns.length)
+      
+      // 2. Your exact optimistic update
+      setColumns((prevColumns) => [
+        ...prevColumns,
+        { id: dbCol.id, title: dbCol.title, cards: [] },
+      ])
+    } catch(e) {
+      console.error(e)
+      setErrorMessage(getErrorMessage(e))
+    }
   }
 
-  function renameColumn(columnId: string, title: string) {
+  async function renameColumn(columnId: string, title: string) {
+    // 1. Your exact optimistic update
     setColumns((prevColumns) =>
       prevColumns.map((column) =>
         column.id === columnId ? { ...column, title } : column,
       ),
     )
+    // 2. Rename in DB
+    await dbRenameColumn(columnId, title).catch((error) => {
+      console.error(error)
+      setErrorMessage(getErrorMessage(error))
+      void refreshBoard()
+    })
   }
 
-  function deleteColumn(columnId: string) {
+  async function deleteColumn(columnId: string) {
+    // 1. Your exact optimistic update
     setColumns((prevColumns) =>
       prevColumns.filter((column) => column.id !== columnId),
     )
+    // 2. Delete from DB
+    await dbDeleteColumn(columnId).catch((error) => {
+      console.error(error)
+      setErrorMessage(getErrorMessage(error))
+      void refreshBoard()
+    })
   }
 
   function updateNewCardTitle(columnId: string, title: string) {
@@ -328,7 +482,7 @@ function App() {
   }
 
   function handleDragEnd(event: DragEndEvent) {
-    setActiveCard(null) 
+    setActiveCard(null)
 
     const { active, over } = event
     if (!over) return
@@ -345,57 +499,76 @@ function App() {
     if (sourceColumnId === targetColumnId) {
       if (activeId === overId) return
 
-      setColumns((prevColumns) =>
-        prevColumns.map((column) => {
-          if (column.id !== sourceColumnId) return column
-
-          const oldIndex = column.cards.findIndex((card) => card.id === activeId)
-          const newIndex = column.cards.findIndex((card) => card.id === overId)
-
-          return {
-            ...column,
-            cards: arrayMove(column.cards, oldIndex, newIndex),
-          }
-        }),
+      const orderedCards = getOrderedCardsForMove(
+        columns,
+        sourceColumnId,
+        targetColumnId,
+        activeId,
+        overId,
       )
-    } else {
-      setColumns((prevColumns) => {
-        const sourceColumn = prevColumns.find((col) => col.id === sourceColumnId)
-        const targetColumn = prevColumns.find((col) => col.id === targetColumnId)
 
-        if (!sourceColumn || !targetColumn) return prevColumns
+      if (!orderedCards) return
 
-        const movingCard = sourceColumn.cards.find((card) => card.id === activeId)
-        if (!movingCard) return prevColumns
+      setColumns((prevColumns) =>
+        prevColumns.map((column) =>
+          column.id === sourceColumnId
+            ? { ...column, cards: orderedCards }
+            : column,
+        ),
+      )
 
-        const isOverACard = over.data.current?.columnId !== undefined
-        let newIndex = targetColumn.cards.length
-
-        if (isOverACard) {
-          newIndex = targetColumn.cards.findIndex((card) => card.id === overId)
-        }
-
-        return prevColumns.map((column) => {
-          if (column.id === sourceColumnId) {
-            return {
-              ...column,
-              cards: column.cards.filter((card) => card.id !== activeId),
-            }
-          }
-
-          if (column.id === targetColumnId) {
-            const updatedCards = [...column.cards]
-            updatedCards.splice(newIndex, 0, movingCard)
-            return {
-              ...column,
-              cards: updatedCards,
-            }
-          }
-
-          return column
-        })
-      })
+      void syncColumnCardPositions(sourceColumnId, orderedCards)
+      return
     }
+
+    const targetCards = getOrderedCardsForMove(
+      columns,
+      sourceColumnId,
+      targetColumnId,
+      activeId,
+      overId,
+    )
+    const sourceColumn = columns.find((col) => col.id === sourceColumnId)
+
+    if (!targetCards || !sourceColumn) return
+
+    const sourceCards = sourceColumn.cards.filter((card) => card.id !== activeId)
+
+    setColumns((prevColumns) =>
+      prevColumns.map((column) => {
+        if (column.id === sourceColumnId) return { ...column, cards: sourceCards }
+        if (column.id === targetColumnId) return { ...column, cards: targetCards }
+
+        return column
+      }),
+    )
+
+    void syncColumnCardPositions(sourceColumnId, sourceCards)
+    void syncColumnCardPositions(targetColumnId, targetCards)
+  }
+
+  // --- SUPABASE GATEKEEPERS ---
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-900 text-white">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-500 border-t-transparent"></div>
+          <p className="text-slate-400 text-sm">Connecting...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!session) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-900 p-6">
+        <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-2xl">
+          <h1 className="mb-6 text-center text-3xl font-bold text-slate-800">Project Alpha</h1>
+          <p className="mb-8 text-center text-sm text-slate-500">Sign in to access your board</p>
+          <Auth supabaseClient={supabase} appearance={{ theme: ThemeSupa }} providers={[]} />
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -411,8 +584,8 @@ function App() {
           <h1 className="text-xl font-bold tracking-tight text-white">Project Alpha</h1>
         </div>
         
-        {/* Theme Picker */}
-        <div className="flex items-center gap-3">
+        {/* Theme Picker & Logout */}
+        <div className="flex items-center gap-4">
           <span className="hidden text-sm font-medium text-white/70 sm:block">Theme</span>
           <div className="flex gap-2">
             {BOARD_THEMES.map((t) => (
@@ -430,10 +603,30 @@ function App() {
               />
             ))}
           </div>
+          
+          <button 
+            onClick={() => supabase.auth.signOut()}
+            className="ml-2 rounded-md bg-red-500/20 px-3 py-1.5 text-sm font-semibold text-red-400 transition-colors hover:bg-red-500/30"
+          >
+            Sign Out
+          </button>
         </div>
       </header>
 
       <main className="overflow-x-auto p-6">
+        {errorMessage && (
+          <div className="mb-4 max-w-3xl rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 shadow-sm">
+            {errorMessage}
+          </div>
+        )}
+
+        {boardLoading && (
+          <div className="mb-4 inline-flex items-center gap-2 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium text-white shadow-sm backdrop-blur-md">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
+            Loading board
+          </div>
+        )}
+
         <DndContext
           sensors={sensors}
           collisionDetection={closestCorners}
