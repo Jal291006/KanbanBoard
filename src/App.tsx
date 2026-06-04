@@ -563,7 +563,7 @@ function App() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-900 p-6">
         <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-2xl">
-          <h1 className="mb-6 text-center text-3xl font-bold text-slate-800">Project Alpha</h1>
+          <h1 className="mb-6 text-center text-3xl font-bold text-slate-800">Kanban Board</h1>
           <p className="mb-8 text-center text-sm text-slate-500">Sign in to access your board</p>
           <Auth supabaseClient={supabase} appearance={{ theme: ThemeSupa }} providers={[]} />
         </div>
