@@ -25,7 +25,12 @@ export async function fetchBoardData() {
     title: col.title,
     cards: (dbCards || [])
       .filter((card: any) => card.column_id === col.id)
-      .map((card: any) => ({ id: card.id, title: card.title })),
+      .map((card: any) => ({ 
+        id: card.id, 
+        title: card.title,
+        due_date: card.due_date,
+        progress: card.progress || 0
+      })),
   }))
 }
 
@@ -79,6 +84,17 @@ export async function dbUpdateCardPosition(cardId: string, targetColumnId: strin
   const { error } = await supabase
     .from('cards')
     .update({ column_id: targetColumnId, position })
+    .eq('id', cardId)
+  if (error) throw error
+}
+
+export async function dbUpdateCardDetails(
+  cardId: string, 
+  updates: { title?: string; due_date?: string | null; progress?: number }
+) {
+  const { error } = await supabase
+    .from('cards')
+    .update(updates)
     .eq('id', cardId)
   if (error) throw error
 }

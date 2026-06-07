@@ -17,7 +17,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { X } from 'lucide-react'
+import { X, Moon, Sun } from 'lucide-react'
 
 // --- NEW SUPABASE IMPORTS ---
 import { Auth } from '@supabase/auth-ui-react'
@@ -32,12 +32,15 @@ import {
   dbDeleteCard,
   dbRenameColumn,
   dbUpdateCardPosition,
+  dbUpdateCardDetails,
 } from './dbService'
 // ----------------------------
 
 type Card = {
   id: string
   title: string
+  due_date?: string | null
+  progress?: number
 }
 
 type Column = {
@@ -46,23 +49,20 @@ type Column = {
   cards: Card[]
 }
 
-// Upgraded themes for a more premium SaaS look
-const BOARD_THEMES = [
-  { id: 'midnight', label: 'Midnight', value: 'bg-slate-900' },
-  { id: 'classic-blue', label: 'Blue', value: 'bg-blue-700' },
-  { id: 'emerald', label: 'Emerald', value: 'bg-teal-800' },
-  { id: 'purple', label: 'Purple', value: 'bg-indigo-950' },
-  { id: 'sunset', label: 'Sunset', value: 'bg-gradient-to-br from-orange-500 to-rose-600' },
-  { id: 'ocean', label: 'Ocean', value: 'bg-gradient-to-br from-cyan-700 to-blue-900' },
-]
+type ActivityLog = {
+  id: string
+  action: string
+  timestamp: Date
+}
 
 type TrelloCardProps = {
   card: Card
   columnId: string
   onDeleteCard: (columnId: string, cardId: string) => void
+  onUpdateCardDetails: (cardId: string, updates: Partial<Card>) => void
 }
 
-function TrelloCard({ card, columnId, onDeleteCard }: TrelloCardProps) {
+function TrelloCard({ card, columnId, onDeleteCard, onUpdateCardDetails }: TrelloCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({
       id: card.id,
@@ -76,28 +76,18 @@ function TrelloCard({ card, columnId, onDeleteCard }: TrelloCardProps) {
     transition,
   }
 
-  const showRedLabel = card.id.includes('1') || card.id.includes('4')
-  const showBlueLabel = card.id.includes('2') || card.id.includes('3')
-
   return (
     <div
       ref={setNodeRef}
       style={style}
       {...listeners}
       {...attributes}
-      className={`group flex cursor-grab flex-col gap-2 rounded-md bg-white p-3 text-sm shadow-sm ring-1 ring-slate-200 hover:ring-blue-400 ${
-        isDragging ? 'opacity-40 shadow-2xl ring-2 ring-blue-500' : ''
+      className={`group flex cursor-grab flex-col gap-3 rounded-xl bg-white dark:bg-[#1E293B] p-4 text-sm shadow-sm ring-1 ring-slate-200 dark:ring-white/10 hover:ring-indigo-400 dark:hover:ring-indigo-500 transition-all duration-200 ${
+        isDragging ? 'opacity-60 shadow-2xl ring-2 ring-indigo-500 scale-[1.02]' : 'hover:shadow-md'
       }`}
     >
-      {/* Priority Labels */}
-      <div className="flex gap-1">
-        {showRedLabel && <div className="h-1.5 w-8 rounded-full bg-rose-500"></div>}
-        {showBlueLabel && <div className="h-1.5 w-8 rounded-full bg-blue-500"></div>}
-        {!showRedLabel && !showBlueLabel && <div className="h-1.5 w-8 rounded-full bg-emerald-500"></div>}
-      </div>
-
       <div className="flex items-start justify-between">
-        <span className="font-medium text-slate-700">{card.title}</span>
+        <span className="font-semibold leading-relaxed text-slate-800 dark:text-slate-100">{card.title}</span>
         <button
           onPointerDown={(e) => {
             e.stopPropagation()
@@ -105,26 +95,56 @@ function TrelloCard({ card, columnId, onDeleteCard }: TrelloCardProps) {
           }}
           type="button"
           aria-label={`Delete ${card.title}`}
-          className="rounded p-1 text-slate-300 opacity-0 transition-opacity hover:bg-slate-100 hover:text-red-500 group-hover:opacity-100"
+          className="rounded-md p-1.5 text-slate-400 opacity-0 transition-all hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/20 dark:hover:text-rose-400 group-hover:opacity-100"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-4 w-4" />
         </button>
       </div>
 
-      {/* Card Metadata (Dates & Comments) */}
-      <div className="mt-1 flex items-center gap-4 text-xs font-semibold text-slate-400">
-        <span className="flex items-center gap-1.5 hover:text-slate-600">
-          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-          Oct 24
-        </span>
-        <span className="flex items-center gap-1.5 hover:text-slate-600">
-          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-          </svg>
-          2
-        </span>
+      {/* Progress & Due Date */}
+      <div className="mt-1 flex flex-col gap-3 border-t border-slate-100 dark:border-slate-700/50 pt-3">
+        {/* Progress Bar */}
+        <div className="flex items-center gap-2">
+          <div 
+            className="relative flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden cursor-pointer"
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              const rect = e.currentTarget.getBoundingClientRect()
+              const percent = Math.round(Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)))
+              onUpdateCardDetails(card.id, { progress: percent })
+            }}
+          >
+            <div 
+              className={`h-full rounded-full transition-all duration-300 ${
+                (card.progress || 0) >= 100 
+                  ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' 
+                  : (card.progress || 0) >= 50 
+                    ? 'bg-indigo-500 shadow-[0_0_6px_rgba(99,102,241,0.3)]' 
+                    : 'bg-sky-500 shadow-[0_0_6px_rgba(14,165,233,0.3)]'
+              }`}
+              style={{ width: `${card.progress || 0}%` }} 
+            />
+          </div>
+          <span className={`text-xs font-bold w-9 text-right ${
+            (card.progress || 0) >= 100 ? 'text-emerald-500' : 'text-slate-500'
+          }`}>{card.progress || 0}%</span>
+        </div>
+        
+        {/* Due Date */}
+        <div className="flex items-center text-xs font-semibold text-slate-400">
+          <div className="flex items-center gap-1.5 hover:text-slate-600 transition-colors">
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <input 
+              type="date" 
+              value={card.due_date || ''}
+              onChange={(e) => onUpdateCardDetails(card.id, { due_date: e.target.value })}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="bg-transparent border-none outline-none text-slate-500 dark:text-slate-400 focus:ring-0 p-0 cursor-pointer flex-1 min-w-0"
+            />
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -133,21 +153,25 @@ function TrelloCard({ card, columnId, onDeleteCard }: TrelloCardProps) {
 type TrelloColumnProps = {
   column: Column
   newCardTitle: string
+  searchQuery: string
   onAddCard: (columnId: string) => void
   onDeleteCard: (columnId: string, cardId: string) => void
   onDeleteColumn: (columnId: string) => void
   onRenameColumn: (columnId: string, title: string) => void
   onUpdateNewCardTitle: (columnId: string, title: string) => void
+  onUpdateCardDetails: (cardId: string, updates: Partial<Card>) => void
 }
 
 function TrelloColumn({
   column,
   newCardTitle,
+  searchQuery,
   onAddCard,
   onDeleteCard,
   onDeleteColumn,
   onRenameColumn,
   onUpdateNewCardTitle,
+  onUpdateCardDetails,
 }: TrelloColumnProps) {
   const { setNodeRef, isOver } = useDroppable({
     id: column.id,
@@ -161,11 +185,11 @@ function TrelloColumn({
   return (
     <div
       ref={setNodeRef}
-      className={`w-72 shrink-0 rounded-xl bg-slate-100 p-3 text-black shadow-sm ${
-        isOver ? 'ring-2 ring-blue-400' : ''
+      className={`w-[320px] shrink-0 rounded-2xl bg-white/90 dark:bg-[#0F172A]/60 border border-gray-200 dark:border-gray-700 p-4 shadow-sm ring-1 ring-slate-200/60 dark:ring-white/10 backdrop-blur-xl flex flex-col transition-colors ${
+        isOver ? 'ring-2 ring-indigo-500/50 bg-indigo-50/50 dark:bg-indigo-900/20' : ''
       }`}
     >
-      <div className="mb-3 flex items-center justify-between gap-2 px-1">
+      <div className="mb-4 flex items-center justify-between gap-2 px-1 pt-1">
         {isEditingTitle ? (
           <input
             autoFocus
@@ -173,12 +197,12 @@ function TrelloColumn({
             onChange={(e) => onRenameColumn(column.id, e.target.value)}
             onBlur={() => setIsEditingTitle(false)}
             onKeyDown={(e) => e.key === 'Enter' && setIsEditingTitle(false)}
-            className="min-w-0 flex-1 rounded-md bg-white px-2 py-1 font-semibold text-slate-800 outline-none ring-2 ring-blue-500"
+            className="min-w-0 flex-1 rounded-lg bg-white dark:bg-slate-800 px-3 py-1.5 font-bold text-slate-800 dark:text-slate-100 outline-none ring-2 ring-indigo-500 shadow-inner"
           />
         ) : (
           <h2
             onClick={() => setIsEditingTitle(true)}
-            className="flex-1 cursor-pointer truncate rounded-md px-2 py-1 font-semibold text-slate-800 hover:bg-slate-200/60"
+            className="flex-1 cursor-pointer truncate rounded-lg px-3 py-1.5 font-bold tracking-tight text-slate-800 dark:text-slate-100 transition-colors hover:bg-slate-200/50 dark:hover:bg-slate-800/50"
           >
             {column.title}
           </h2>
@@ -195,27 +219,32 @@ function TrelloColumn({
       </div>
 
       <SortableContext
-        items={column.cards.map((card) => card.id)}
+        items={column.cards
+          .filter(c => !searchQuery || (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()))
+          .map((card) => card.id)}
         strategy={verticalListSortingStrategy}
       >
         <div className="space-y-3 min-h-[10px]">
-          {column.cards.map((card) => (
+          {column.cards
+            .filter(c => !searchQuery || (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()))
+            .map((card) => (
             <TrelloCard
               key={card.id}
               card={card}
               columnId={column.id}
               onDeleteCard={onDeleteCard}
+              onUpdateCardDetails={onUpdateCardDetails}
             />
           ))}
         </div>
       </SortableContext>
 
-      <div className="mt-3">
+      <div className="mt-4">
         {newCardTitle !== undefined && (
           <input
             value={newCardTitle}
             onChange={(e) => onUpdateNewCardTitle(column.id, e.target.value)}
-            className="mb-2 w-full rounded-md border border-slate-300 p-2 text-sm text-black outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+            className="mb-3 w-full rounded-xl border border-transparent bg-white dark:bg-slate-800 p-3 text-sm font-medium text-slate-800 dark:text-slate-100 outline-none placeholder:text-slate-400 focus:border-transparent focus:ring-2 focus:ring-indigo-500 shadow-inner transition-all"
             placeholder="What needs to be done?"
             onKeyDown={(e) => {
               if (e.key === 'Enter') onAddCard(column.id)
@@ -224,9 +253,9 @@ function TrelloColumn({
         )}
         <button
           onClick={() => onAddCard(column.id)}
-          className="flex w-full items-center gap-2 rounded-lg p-2 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-800"
+          className="group flex w-full items-center gap-2 rounded-xl p-2.5 text-sm font-semibold text-slate-500 dark:text-slate-400 transition-all hover:bg-white dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 hover:shadow-sm"
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="h-4 w-4 transition-transform group-hover:scale-110" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
           </svg>
           Add a card
@@ -247,7 +276,14 @@ function App() {
   const [newCardTitles, setNewCardTitles] = useState<Record<string, string>>({})
   const [newColumnTitle, setNewColumnTitle] = useState('')
   const [activeCard, setActiveCard] = useState<Card | null>(null)
-  const [theme, setTheme] = useState(BOARD_THEMES[0].value)
+  const [isDarkMode, setIsDarkMode] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([])
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+
+  function logActivity(action: string) {
+    setActivityLogs(prev => [{ id: Math.random().toString(), action, timestamp: new Date() }, ...prev])
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -370,6 +406,28 @@ function App() {
     }
   }
 
+  async function updateCardDetails(cardId: string, updates: Partial<Card>) {
+    setColumns((prevColumns) =>
+      prevColumns.map((col) => ({
+        ...col,
+        cards: col.cards.map((c) => (c.id === cardId ? { ...c, ...updates } : c))
+      }))
+    )
+    
+    if (updates.progress !== undefined) {
+      logActivity(`Updated progress to ${updates.progress}%`)
+    } else if (updates.due_date !== undefined) {
+      logActivity(`Set due date to ${updates.due_date || 'none'}`)
+    }
+
+    try {
+      await dbUpdateCardDetails(cardId, updates)
+    } catch(e) {
+      console.error(e)
+      setErrorMessage(getErrorMessage(e))
+    }
+  }
+
   async function addCard(columnId: string) {
     const cardTitle = newCardTitles[columnId] || ''
     if (!cardTitle.trim()) return
@@ -388,11 +446,12 @@ function App() {
           column.id === columnId
             ? {
                 ...column,
-                cards: [...column.cards, { id: dbCard.id, title: dbCard.title }],
+                cards: [...column.cards, { id: dbCard.id, title: dbCard.title, progress: 0 }],
               }
             : column,
         ),
       )
+      logActivity(`Added card "${dbCard.title}"`)
     } catch(e) {
       console.error(e)
       setErrorMessage(getErrorMessage(e))
@@ -400,6 +459,9 @@ function App() {
   }
 
   async function deleteCard(columnId: string, cardId: string) {
+    const cardToDelete = columns.find(c => c.id === columnId)?.cards.find(c => c.id === cardId)
+    if (cardToDelete) logActivity(`Deleted card "${cardToDelete.title}"`)
+
     // 1. Your exact optimistic update
     setColumns((prevColumns) =>
       prevColumns.map((column) =>
@@ -509,6 +571,8 @@ function App() {
 
       if (!orderedCards) return
 
+      logActivity(`Reordered cards in column`)
+
       setColumns((prevColumns) =>
         prevColumns.map((column) =>
           column.id === sourceColumnId
@@ -543,6 +607,11 @@ function App() {
       }),
     )
 
+    const movingCard = sourceColumn.cards.find((card) => card.id === activeId)
+    if (movingCard) {
+      logActivity(`Moved card "${movingCard.title}"`)
+    }
+
     void syncColumnCardPositions(sourceColumnId, sourceCards)
     void syncColumnCardPositions(targetColumnId, targetCards)
   }
@@ -572,48 +641,76 @@ function App() {
   }
 
   return (
-    <div className={`min-h-screen text-white transition-colors duration-500 ${theme}`}>
-      {/* Upgraded Glassmorphic Header */}
-      <header className="flex h-16 items-center justify-between border-b border-white/10 bg-black/20 px-6 shadow-sm backdrop-blur-md">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded bg-blue-500 text-white shadow-sm">
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-            </svg>
-          </div>
-          <h1 className="text-xl font-bold tracking-tight text-white">Kanban Board</h1>
-        </div>
-        
-        {/* Theme Picker & Logout */}
-        <div className="flex items-center gap-4">
-          <span className="hidden text-sm font-medium text-white/70 sm:block">Theme</span>
-          <div className="flex gap-2">
-            {BOARD_THEMES.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTheme(t.value)}
-                title={t.label}
-                className={`h-5 w-5 rounded-full shadow-sm transition-transform hover:scale-125 ${
-                  t.value
-                } ${
-                  theme === t.value
-                    ? 'ring-2 ring-white ring-offset-2 ring-offset-transparent'
-                    : 'border border-white/20'
-                }`}
+    <div className={`h-screen font-sans transition-colors duration-700 ${isDarkMode ? 'dark bg-[#020617] text-slate-300' : 'bg-slate-50 text-slate-800'} relative overflow-hidden`}>
+      {/* Premium Decorative Background Elements */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className={`absolute -left-1/4 -top-1/4 h-[800px] w-[800px] rounded-full blur-[120px] transition-colors duration-700 ${isDarkMode ? 'bg-indigo-900/30' : 'bg-indigo-300/30'}`} />
+        <div className={`absolute -right-1/4 top-1/4 h-[600px] w-[600px] rounded-full blur-[100px] transition-colors duration-700 ${isDarkMode ? 'bg-emerald-900/20' : 'bg-sky-200/40'}`} />
+        <div className={`absolute left-1/3 bottom-0 h-[500px] w-[500px] rounded-full blur-[100px] transition-colors duration-700 ${isDarkMode ? 'bg-purple-900/20' : 'bg-purple-200/30'}`} />
+      </div>
+
+      <div className="relative z-10 flex h-screen flex-col">
+        {/* Upgraded Glassmorphic Header */}
+        <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200/60 dark:border-white/5 bg-white/60 dark:bg-[#020617]/60 px-6 shadow-sm backdrop-blur-xl">
+          <div className="flex items-center gap-8">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/30 ring-1 ring-white/20">
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+              </div>
+              <h1 className="bg-gradient-to-r from-slate-800 to-slate-600 dark:from-white dark:to-slate-300 bg-clip-text text-xl font-extrabold tracking-tight text-transparent">
+                Kanban Board
+              </h1>
+            </div>
+
+            {/* Search Bar */}
+            <div className="relative hidden md:block">
+              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                <svg className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <input
+                type="text"
+                placeholder="Search board..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="block w-64 rounded-full border-none bg-slate-100/80 dark:bg-slate-800/50 py-1.5 pl-10 pr-3 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-500 focus:bg-white dark:focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 shadow-inner transition-all"
               />
-            ))}
+            </div>
           </div>
           
-          <button 
-            onClick={() => supabase.auth.signOut()}
-            className="ml-2 rounded-md bg-red-500/20 px-3 py-1.5 text-sm font-semibold text-red-400 transition-colors hover:bg-red-500/30"
-          >
-            Sign Out
-          </button>
-        </div>
-      </header>
+          {/* Theme Picker & Logout */}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+              className="rounded-full p-2 text-slate-500 transition-all hover:bg-slate-200/80 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white"
+              title="Activity History"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </button>
+            <div className="w-px h-5 bg-slate-300 dark:bg-slate-700 mx-1"></div>
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className="rounded-full p-2 text-slate-500 transition-all hover:bg-slate-200/80 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white"
+              title="Toggle theme"
+            >
+              {isDarkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+            </button>
+            
+            <button 
+              onClick={() => supabase.auth.signOut()}
+              className="rounded-lg bg-rose-500/10 dark:bg-rose-500/20 px-4 py-2 text-sm font-bold text-rose-600 dark:text-rose-400 transition-all hover:bg-rose-500/20 dark:hover:bg-rose-500/30 active:scale-95"
+            >
+              Sign Out
+            </button>
+          </div>
+        </header>
 
-      <main className="overflow-x-auto p-6">
+      <main className="flex-1 overflow-x-auto overflow-y-auto p-6">
         {errorMessage && (
           <div className="mb-4 max-w-3xl rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 shadow-sm">
             {errorMessage}
@@ -634,24 +731,46 @@ function App() {
           onDragEnd={handleDragEnd}
         >
           <div className="flex items-start gap-6">
-            {columns.map((column) => (
+            {columns
+              .filter((column) => !searchQuery || 
+                column.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                column.cards.some(c => (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()))
+              )
+              .map((column) => (
               <TrelloColumn
                 key={column.id}
                 column={column}
                 newCardTitle={newCardTitles[column.id] || ''}
+                searchQuery={searchQuery}
                 onAddCard={addCard}
                 onDeleteCard={deleteCard}
                 onDeleteColumn={deleteColumn}
                 onRenameColumn={renameColumn}
                 onUpdateNewCardTitle={updateNewCardTitle}
+                onUpdateCardDetails={updateCardDetails}
               />
             ))}
 
-            <div className="w-72 shrink-0 rounded-xl bg-white/10 p-3 shadow-sm backdrop-blur-md transition-colors hover:bg-white/20">
+            {/* No results message */}
+            {searchQuery && !columns.some(col => 
+              col.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+              col.cards.some(c => (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()))
+            ) && (
+              <div className="flex flex-col items-center justify-center w-full py-20 text-center">
+                <svg className="h-16 w-16 text-slate-300 dark:text-slate-600 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <p className="text-lg font-semibold text-slate-500 dark:text-slate-400">No results found for "{searchQuery}"</p>
+                <p className="text-sm text-slate-400 dark:text-slate-500 mt-1">Try a different search term</p>
+              </div>
+            )}
+
+            {!searchQuery && (
+            <div className="w-[320px] shrink-0 rounded-2xl bg-white/30 dark:bg-white/5 p-4 shadow-sm ring-1 ring-slate-200/50 dark:ring-white/5 backdrop-blur-xl transition-all hover:bg-white/50 dark:hover:bg-white/10">
               <input
                 value={newColumnTitle}
                 onChange={(e) => setNewColumnTitle(e.target.value)}
-                className="w-full rounded-lg border border-white/20 bg-white/80 p-2.5 text-sm font-medium text-black outline-none placeholder:text-slate-500 focus:bg-white focus:ring-2 focus:ring-blue-400"
+                className="w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 p-3 text-sm font-bold text-slate-800 dark:text-slate-100 outline-none placeholder:text-slate-500 dark:placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 shadow-inner transition-all"
                 placeholder="+ Add another list"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
@@ -660,6 +779,7 @@ function App() {
                 }}
               />
             </div>
+            )}
           </div>
 
           <DragOverlay>
@@ -668,11 +788,41 @@ function App() {
                 card={activeCard}
                 columnId="overlay"
                 onDeleteCard={() => {}}
+                onUpdateCardDetails={() => {}}
               />
             ) : null}
           </DragOverlay>
         </DndContext>
       </main>
+
+      {/* Activity History Panel */}
+      <div className={`fixed inset-y-0 right-0 z-50 w-80 transform bg-white dark:bg-[#0F172A] shadow-2xl transition-transform duration-300 ease-in-out border-l border-slate-200 dark:border-slate-800 ${isHistoryOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+        <div className="flex h-16 items-center justify-between border-b border-slate-200 dark:border-slate-800 px-6">
+          <h2 className="text-lg font-bold text-slate-800 dark:text-white">Activity</h2>
+          <button onClick={() => setIsHistoryOpen(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="p-6 overflow-y-auto h-[calc(100vh-4rem)] space-y-5">
+          {activityLogs.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center mt-10">No recent activity.</p>
+          ) : (
+            activityLogs.map(log => (
+              <div key={log.id} className="flex gap-4 text-sm">
+                <div className="flex-shrink-0 mt-1">
+                  <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 ring-4 ring-indigo-50 dark:ring-indigo-900/20" />
+                </div>
+                <div>
+                  <p className="text-slate-700 dark:text-slate-300 font-medium leading-tight">{log.action}</p>
+                  <p className="text-xs text-slate-400 mt-1">{log.timestamp.toLocaleTimeString()}</p>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      </div>
     </div>
   )
 }
